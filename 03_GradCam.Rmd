@@ -1,0 +1,886 @@
+---
+title: "CNN"
+subtitle: "April 24th, 2023"
+author: "Ryohei SHIBATA"
+output:
+  powerpoint_presentation:
+    slide_level: 2 # use this to override default
+    reference_doc: ~/Git/R/Template_ENW.pptx
+---
+
+```{R, include = FALSE, warning = FALSE}
+knitr::opts_chunk$set(echo = FALSE, 
+                      eval = FALSE, 
+                      warning = FALSE, 
+                      message = FALSE, 
+                      comment = "",
+                      cache = FALSE) 
+```
+
+# Setup
+```{R}
+source("Setup.R")
+```
+
+# Best model
+
+## fragrant-music-129
+* Used raw lipidome data
+* Inverse transformed transcriptome and lipidome data
+* AUC = 0.869
+
+
+## GradCam by python
+![](/Users/shibataryohei/Git/RS_mRNALipid-Asthma/GradCam/fragrant-music-129.png)
+
+
+## GradCam by R
+```{R}
+# Reproduce the gradcam image from array
+# class_cam[0]
+path_gd = "00_Colab/Tao/Best_ClmRLi_AllTAG_Inv/"
+path_od = "/Users/shibataryohei/Library/CloudStorage/OneDrive-MassGeneralBrigham/MARC35/NN/"
+
+map(list(0, 1), function(i){
+  drive_download(glue("{path_gd}gradcam/Coord_GradCam{i}.csv"),
+               path = glue("{path_od}Coord_GradCam{i}.csv"),
+               overwrite = TRUE)
+  
+  read_csv(glue("{path_od}Coord_GradCam{i}.csv"),) %>% 
+  mutate(coords1 = 0:(nrow(.)-1)) %>% 
+  gather(coords0, Value, -coords1) %>% 
+  mutate(coords0 = as.numeric(coords0)) %>% 
+  mutate(x_coords = coords0) %>%
+  mutate(y_coords = 227 - coords1)
+}) -> Coords_GradCam_tbl_list
+
+names(Coords_GradCam_tbl_list) <- c("0", "1")
+```
+
+```{R}
+# 0.25
+fs_threshold = 0.8 # 0.6 is best at 08/23/2023
+  
+Coords_GradCam_tbl_list %>% 
+  map(~ .x %>% filter(Value > (1 - fs_threshold))) -> Coords_GradCam_Hot_tbl_list
+
+Coords_GradCam_Hot_tbl_list %>% 
+  map(~ .x %>% 
+  mutate(Value = if_else(Value > (1 - fs_threshold), 1, 0)) %>% 
+  ggplot(., aes(x = x_coords, y = y_coords, fill = Value))+
+  geom_tile()+
+  scale_fill_viridis_c()+
+  ylim(0, 227)+
+    xlim(0, 227)) %>% 
+  ggpubr::ggarrange(plotlist = .,
+                    labels = c("0.", "1."),
+                    # hjust = -1,
+                    # vjust = -1,
+                    # heights = c(1, 1, 1),
+                    # widths = c(1, 1, 1),
+                    nrow = 1) -> Heatmap_GradCam_gg
+                 
+ggsave("GradCam/Heatmap_GradCam.png",
+       plot = Heatmap_GradCam_gg,
+       dpi = 300, h = 3, w = 8)
+```
+![](GradCam/Heatmap_GradCam.png)
+
+
+## GradCam by R
+```{R}
+
+# drive_download(glue("{path_gd}gradcam/Coords_IT.csv"),
+#                path = "~/Library/CloudStorage/OneDrive-MassGeneralBrigham/MARC35/NN/Coords_IT.csv",
+#                overwrite = TRUE)
+
+read_csv("~/Library/CloudStorage/OneDrive-MassGeneralBrigham/MARC35/NN/Coords_IT.csv")  %>% 
+  as.data.frame %>% 
+  as_tibble %>% 
+  mutate(y_coords = 227 - coord0) %>% 
+   mutate(x_coords = coord1) %>% 
+  separate(feature, into = c("Data", "Variable"), sep = "__") %>% 
+  c2f -> Coords_IT_tbl
+
+map(Coords_GradCam_Hot_tbl_list, function(tbl){
+  Coords_IT_tbl %>% 
+  left_join(.,
+            tbl %>% 
+              select(x_coords, y_coords) %>% 
+              mutate(Hot = "1"))}) -> Coords_IT_Hot_tbl_list
+
+Coords_IT_Hot_tbl_list %>% 
+  map(~ ggplot(.x,
+               aes(x = x_coords, y = y_coords, fill = Data, color = Hot))+ # 
+  geom_point(pch = 21, size = 0.8)+
+  ylim(0, 227) + 
+  xlim(0, 227) +
+  scale_fill_manual(values = c("red", "white", "yellow",
+                               "purple",
+                               "skyblue", "green", "blue"))+
+  geom_vline(xintercept = c(80, 122.5),
+             linetype = "dashed",
+             color = "gray")+
+  geom_hline(yintercept = c(90, 130, 170),
+             linetype = "dashed",
+             color = "gray") +
+  scale_color_manual(values = c("red", "gray90"))) -> Point_Feature_GradCam_gg
+
+ggpubr::ggarrange(plotlist = Point_Feature_GradCam_gg,
+                  labels = c("0", "1"),
+                  # font.label = list(size = 18),
+                  # heights = c(1, 1.1),
+                  # widths = c(1, 1.5),
+                  nrow = 1) %>% 
+  ggsave("GradCam/Point_Feature_GradCam.png",
+         plot = .,
+       dpi = 300, h = 3, w = 9)
+```
+![Use Asthma = 1 GradCam data.](GradCam/Point_Feature_GradCam.png)
+
+## Hot number
+```{R}
+Coords_IT_Hot_tbl_list[["1"]] %>% 
+  filter(Hot == "1") %>% 
+  group_by(Data) %>% 
+  summarise(Count = n())
+
+```
+
+
+# Network
+```{R}
+Coords_IT_Hot_tbl_list[["1"]] %>% 
+        filter(Hot == "1") %>% 
+  mutate(Cluster = case_when(y_coords > 170 & x_coords < 80 ~ "Cluster1",
+                             y_coords > 170 & x_coords > 80 & x_coords < 122.5 ~ "Cluster2",
+                             y_coords > 170 & x_coords > 122.5 ~ "Cluster3",
+                             y_coords > 130 & y_coords < 170 ~ "Cluster4",
+                              y_coords < 130 & y_coords > 90  ~ "Cluster5",
+                              y_coords < 90  ~ "Cluster6"
+                             )) %>%
+  mutate(Cluster = fct_recode(Cluster,
+                              "Cluster2" = "Cluster3",
+                              "Cluster2" = "Cluster4",
+                              "Cluster3" = "Cluster5",
+                              "Cluster4" = "Cluster6")) %>% 
+  # mutate(Cluster = "Cluster") %>% 
+  # filter(is.na(Cluster))
+  select(Data, Variable, Cluster) %>% 
+  
+    split(., .$Cluster) -> GradCam_Hot_Separate_tbl_list
+
+Coords_IT_Hot_tbl_list[["1"]] %>% 
+        filter(Hot == "1") %>% 
+  mutate(Cluster = "Cluster") %>% 
+  select(Data, Variable, Cluster) %>% 
+    split(., .$Cluster) -> GradCam_Hot_Unite_tbl_list
+
+list(Separate = GradCam_Hot_Separate_tbl_list,
+     Unite = GradCam_Hot_Unite_tbl_list) -> GradCam_Hot_tbl_list2
+```
+
+```{R}
+
+map(GradCam_Hot_tbl_list2, function(tbl_list){
+map(tbl_list, function(tbl){
+  
+# tbl %>% 
+#     mutate(Variable = gsub("ENSG", "ENSG\n", Variable)) %>%
+#   mutate(Variable = gsub("\\(", "\n\\(", Variable)) -> tbl
+  
+  tbl %>% 
+  filter(Data %in% c("Omics1", "Omics2", "Clinical")) %>%
+  
+  .$Variable -> Feature_Single
+
+tbl %>% 
+  filter(Data %in% c("ClinicalOmics1", "ClinicalOmics2", "Dualomics")) %>% 
+  select(Variable) %>% 
+  separate(Variable, into = c("V1", "V2"), sep = "@|--") %>% 
+   group_by(V1, V2) %>% 
+  summarise() -> Connection2_tbl
+
+tbl %>% 
+  filter(Data == "ClinicalDualomics") %>% 
+  mutate(Dualomics = gsub(".*--", "", Variable)) %>% 
+  mutate(ClinicalOmics1 = gsub("--.*@", "@", Variable)) %>% 
+  mutate(ClinicalOmics2 = gsub("@.*", "", Variable)) %>% 
+  select(Dualomics, ClinicalOmics1, ClinicalOmics2) %>% 
+  gather(Data, Variable) %>% 
+  select(Variable) %>% 
+  separate(Variable, into = c("V1", "V2"), sep = "@|--") %>% 
+  group_by(V1, V2) %>% 
+  summarise() -> Connection3_tbl
+
+setdiff(Feature_Single,
+        Connection3_tbl %>% check_levels("V1")) %>% 
+  setdiff(.,
+        Connection3_tbl %>% check_levels("V2")) %>% 
+  setdiff(.,
+        Connection2_tbl %>% check_levels("V1")) %>% 
+  setdiff(.,
+        Connection2_tbl %>% check_levels("V2")) -> Feature_SingleOnly
+
+data.frame(V1 = Feature_SingleOnly,
+           V2 = Feature_SingleOnly) %>% 
+  mutate(Connection = 0) %>% 
+  mutate(Clinicaldualomics = 0) -> Connection1_tbl
+
+bind_rows(Connection2_tbl, Connection3_tbl) %>% 
+  group_by(V1, V2) %>% 
+  summarise() %>% 
+  mutate(Connection = 1) %>% 
+  left_join(., Connection3_tbl %>%
+              mutate(Clinicaldualomics = 1)) %>% 
+  mutate(Clinicaldualomics = if_else(is.na(Clinicaldualomics), 0,
+                                     Clinicaldualomics)) %>% 
+  bind_rows(., Connection1_tbl)
+})}) -> Connection_tbl_list2
+```
+
+```{R}
+map(Connection_tbl_list2, function(tbl_list){
+map(tbl_list, function(tbl){
+  
+  tbl %>% 
+  .[, 1:2] %>% 
+  igraph::graph.data.frame(.,
+                           directed = F)})}) -> igraph_RAW_list2
+
+map(Connection_tbl_list2, function(tbl_list){
+map(tbl_list, function(tbl){
+  tbl %>% 
+  .[, 1:2] %>% 
+  gather(V, Variable) %>% 
+  group_by(Variable) %>% 
+  dplyr::summarise(Edge = n()) %>% 
+  arrange(-Edge)})}) -> Edge_tbl_list2
+```
+
+
+```{R}
+library(igraph)
+
+map2(igraph_RAW_list2, Edge_tbl_list2, function(igraph_list, tbl_list){
+map2(igraph_list,
+    tbl_list,
+    function(igraph, tbl){
+  igraph::betweenness(igraph) %>% # 媒介中心性
+  data.frame(Centrality = .) %>%
+  arrange(-Centrality) %>%
+  r2c("Variable") %>%
+  arrange(-Centrality) %>% 
+  inner_join(tbl, .) %>% 
+  ungroup %>% 
+  arrange(desc(Centrality)) %>% 
+  ungroup %>% 
+  mutate(Centrality_Scale = bestNormalize::yeojohnson(Centrality)$x.t) %>% 
+  # mutate(Centrality_Scale = Centrality_Scale^2) %>% 
+  mutate(Centrality_Label = scales::rescale(Centrality_Scale, to = c(1, 8))) %>% 
+  mutate(Centrality_Text = scales::rescale(Centrality_Scale, to = c(0.5, 2)))
+      })}) -> Centrality_tbl_list2
+
+Centrality_tbl_list2 %>% 
+  map(~ .x %>% 
+  map(~ .x %>% 
+        .$Variable)) -> Feature_Cluster_list2
+
+# Based on highest frequency among clusters
+Connection_tbl_list2[["Separate"]] %>%
+  c2f -> Feature_Cluster_tbl
+
+# Based on cluster
+# imap(Feature_Cluster_list2[["Separate"]],
+#     ~ data.frame(Variable = .x,
+#                  Cluster = .y)) %>%
+#   do.call(bind_rows, .) %>%
+#   mutate(Cluster = gsub("Cluster", "", Cluster)) %>%
+#   group_by(Variable) %>%
+#   summarise(Cluster = str_c(Cluster, collapse = "+")) %>%
+#   c2f -> Feature_Cluster_tbl
+```
+
+
+```{R}
+
+map2(igraph_RAW_list2, Centrality_tbl_list2, function(igraph_list, tbl_list){
+map2(igraph_list,
+    tbl_list,
+     function(igraph, tbl){
+       
+  igraph %>% 
+  V %>% 
+  as.list %>% 
+  names %>% 
+  data.frame(Variable = .) %>% 
+  mutate(Data = if_else(grepl("ENSG", Variable), "mRNA",
+                        if_else(grepl("\\(|\\:", Variable), "Lipid",
+                                "Clinical"))) %>% 
+  mutate(Color = case_when(Data == "mRNA" ~ "goldenrod1",
+                           Data == "Lipid" ~ "lightpink",
+                           Data == "Clinical" ~ "#BE6F62")) %>% 
+  mutate(Shape = case_when(Data == "mRNA" ~ "square",
+                           Data == "Lipid" ~ "circle",
+                           Data == "Clinical" ~ "square")) %>% 
+  # mutate(Text_Bold = if_else(Variable %in% Feature_Single, 2, 1)) %>% 
+    mutate(Text_Bold = 2) %>% 
+  # mutate(Frame_Color = if_else(Variable %in% Feature_Single, "blue", "black")) %>% 
+  # mutate(Text_Size = 2) %>% 
+  # mutate(Label_Size = 2) %>% 
+         inner_join(Feature_Cluster_tbl) %>% 
+  inner_join(tbl) %>% 
+  # mutate(Betweenness_Text = if_else(Betweenness < 5, NA, Betweenness_Text)) %>% 
+  mutate(Variable = if_else(Centrality < 100, "", Variable)) %>% 
+         left_join(., Ensembl_Symbol_tbw %>% 
+                     rename(Variable = Ensembl)) %>% 
+         mutate(Variable = if_else(grepl("ENSG", Variable),
+                                   Symbol, Variable)) %>% 
+  as_tibble})}) -> Vertex_Parameters_tbw_list2
+
+# Vertex
+pmap(list(igraph_RAW_list2,
+          Vertex_Parameters_tbw_list2,
+          Connection_tbl_list2),
+     function(igraph_list, tbw_list, tbl_list){
+pmap(list(igraph_list,
+          tbw_list,
+          tbl_list),
+     function(igraph, tbw, tbl){
+       
+num.of.v <- length(V(igraph))
+V(igraph)$color <- as.character(tbw$Color) 
+# V(igraph)$shape <- tbw$Shape
+
+V(igraph)$shape <- tbw$Cluster
+
+# V(igraph)$vertex.frame.color <- as.character(Vertex_Parameters_tbw$Frame_Color) 
+
+## label
+V(igraph)$label <- tbw$Variable
+V(igraph)$size <- tbw$Centrality_Label # labelの大きさ
+
+V(igraph)$label.font  <- tbw$Text_Bold
+V(igraph)$label.cex <- tbw$Centrality_Text
+V(igraph)$vertex.frame.width <- tbw$Text_Bold
+
+# Edge
+# E(igraph)$lty <- Correlation_Network_tbl$Linetype
+E(igraph)$lwd <- tbl$Connection
+
+igraph})}) -> igraph_list2
+
+
+RCy3::createNetworkFromIgraph(
+  igraph_list2[["Unite"]][["Cluster"]],
+  title = "From igraph",
+  collection = "My Igraph Network Collection")
+```
+
+```{R}
+list(Separate = list(Cluster1 = c(6000, 8000),
+                   Cluster2 = c(6000, 8000),
+                    Cluster3 = c(6000, 8000),
+                   Cluster4 = c(6000, 10000)),
+     Unite = list(Cluster = c(8000, 14000))) -> Size_list2
+
+pmap(list(igraph_list2,
+           Size_list2,
+           names(igraph_list2)),
+           function(igraph_list, size_list, type){
+pmap(list(igraph_list,
+          names(igraph_list),
+          size_list),
+     function(igraph, cluster, vec){
+
+png(glue("Network/Network_{type}_{cluster}.png"),
+    width = vec[2], height = vec[1], res = 300)
+
+plot(simplify(igraph),
+     edge.arrow.size = 0,
+     vertex.label.family = "Arial", 
+     vertex.label.color = "black",
+     # vertex.color = colors[membership(Network_Group)],
+     layout = layout_with_dh(igraph)) # layout_on_sphere # layout_with_dh
+dev.off()})})
+```
+
+
+
+## Network, Cluster
+![](Network/Network_Unite_Cluster.png)
+
+# Features
+## Lipid, Class
+```{R}
+Group_Class_Species_tbl %>% 
+  check_levels("Class") -> Lipid_Class
+
+map(Lipid_Class, function(x){
+Feature_Cluster_list2[["Unite"]][["Cluster"]] %>% 
+  .[grepl("\\:", .)] %>% 
+  data.frame(Species = .) %>% 
+  mutate(GradCam = "1") %>% 
+  right_join(Group_Class_Species_tbl) %>% 
+  mutate(GradCam = if_else(is.na(GradCam), "0", paste(GradCam))) %>% 
+  mutate(Class = if_else(Class != x, "Others", Class)) %>% 
+  select(Class, GradCam) %>% 
+  table %>% 
+  rstatix::fisher_test(., detailed = FALSE) %>% 
+    mutate(Variable = x)}) %>% 
+  do.call(bind_rows, .) %>% 
+  mutate(FDR = qvalue_r(p)) %>% 
+  arrange(FDR) %>% 
+  table2png("Network/Table_Lipid_Class_Fisher.png")
+```
+![](Network/Table_Lipid_Class_Fisher.png)
+
+## Lipid, Group
+```{R}
+Group_Class_Species_tbl %>% 
+  check_levels("Group") -> Lipid_Group
+
+map(Lipid_Group, function(x){
+Feature_Cluster_list2[["Unite"]][["Cluster"]] %>% 
+  .[grepl("\\:", .)] %>% 
+  data.frame(Species = .) %>% 
+  mutate(GradCam = "1") %>% 
+  right_join(Group_Class_Species_tbl) %>% 
+  mutate(GradCam = if_else(is.na(GradCam), "0", paste(GradCam))) %>% 
+  mutate(Group = if_else(Group != x, "Others", Group)) %>% 
+  select(Group, GradCam) %>% 
+  table %>% 
+  rstatix::fisher_test() %>% 
+    mutate(Variable = x)}) %>% 
+  do.call(bind_rows, .) %>% 
+  mutate(FDR = qvalue_r(p)) %>% 
+    arrange(FDR) %>% 
+  table2png("Network/Table_Lipid_Group_Fisher.png")
+```
+![](Network/Table_Lipid_Group_Fisher.png)
+
+## Shared in subcluster
+```{R}
+Connection_tbl_list2[["Separate"]] %>% 
+  map(~ .x %>% 
+        select(V1, V2) %>% 
+        gather(Variable, Value) %>% 
+        group_by(Value) %>% 
+        summarise()) %>% 
+  do.call(bind_rows, .) %>% 
+  group_by(Value) %>% 
+  summarise(Count = n()) %>% 
+  arrange(-Count) %>% 
+  filter(Count >= 2) %>% 
+  left_join(Ensembl_Symbol_tbw %>% 
+               rename(Value = Ensembl)) %>% 
+  table2png("Network/Table_Feature_Shared.png")
+
+```
+![](Network/Table_Feature_Shared.png)
+
+# Centrality
+## The number of feature
+```{R}
+intersect(Feature_Cluster_list2[["Separate"]][[1]],
+          Feature_Cluster_list2[["Separate"]][[2]])
+
+Feature_Cluster_list2 %>% 
+  map(~ .x %>% 
+  map(~ .x %>% 
+        data.frame(Variable = .) %>% 
+        mutate(Data = if_else(grepl("ENSG", Variable), "mRNA",
+                              if_else(grepl("\\:", Variable), "Lipid", "Clinical"))) %>% 
+        group_by(Data) %>% 
+        summarise(Count = n())
+      )) %>% 
+  .[[2]] %>% 
+  .[[1]] %>% 
+  table2png("Network/Table_Number_Data.png")
+```
+![](Network/Table_Number_Data.png)
+
+## Features with the highest centrality (Top20)
+
+```{R}
+pmap(list(Centrality_tbl_list2,
+          names(Centrality_tbl_list2),
+          list(10, 20)),
+          function(tbl_list, type, n){
+  tbl_list %>% 
+  imap(~ .x %>% 
+         .[1:n, ] %>% 
+        left_join(., Ensembl_Symbol_tbw %>% 
+                    rename(Variable = Ensembl)) %>% 
+         mutate(Type = type) %>% 
+         mutate(Cluster = .y)) %>% 
+    do.call(bind_rows, .) %>% 
+  mutate(Centrality = round(Centrality, 1)) %>% 
+  select(Type, Cluster, Variable, Symbol, Centrality) %>% 
+  mutate(Symbol = if_else(is.na(Symbol), "", paste(Symbol)))}) -> Centrality_Top10_table_list
+
+Centrality_Top10_table_list %>% 
+  imap(~ table2png(.x, glue("Network/Table_Centrality_Top_{.y}.png")))
+```
+![](Network/Table_Centrality_Top_Unite.png)
+
+
+## Genes, cluster1
+* ITCH: a HECT-type E3 ubiquitin ligase in Tregs plays a specific role in  restraining Th2 cell responses. (J Clin Invest. 2013)
+* FAT2
+* TTC13
+* YBX2
+* PIK3R1:
+
+## Genes, cluster2
+* CASP9: a key enzyme that participates in the execution of apoptosis; Plk1 mediates
+Casp9 phosphorylation at Ser-196, which affects Casp9/3 expression and apoptosis in human airway smooth muscle (HASM) cells. The Plk1–Casp9/3 pathway is upregulated in asthmatic HASM cells. (Am J Respir Cell Mol Biol. 2022)
+* SMARCB3
+* EIF2B1
+* AATF
+* ZNF3
+
+## Genes and lipid
+* Relationships of ITCH or CASP9 to lipid has not been reported.
+
+# Pathway analysis
+## MetaboAnalyst, unite
+```{R}
+Centrality_tbl_list2 %>% 
+  map(~ .x %>% 
+  map(~ .x %>% 
+  filter(grepl("ENSG", Variable)) %>% 
+     filter(Centrality > 1) %>% 
+    inner_join(Ensembl_ENTREZID_tbw %>% 
+                 rename(Variable = Ensembl)) %>% 
+    filter(!is.na(ENTREZID)) %>% 
+  .$ENTREZID)) -> ENTREZID_MA_list2 # ENTREZID == Symbol
+
+ENTREZID_MA_list2[["Unite"]][["Cluster"]] %>% 
+  cat(., sep = "\n")
+
+Centrality_tbl_list2 %>% 
+  map(~ .x %>% 
+  map(~ .x %>% 
+  filter(grepl("\\:", Variable)) %>% 
+     filter(Centrality > 1) %>% 
+    # filter(Edge > 1) %>% 
+    inner_join(Lipid_Annotation_tbw %>% 
+                 rename(Variable = Name_metabolon)) %>% 
+    filter(!is.na(Match)) %>% 
+  .$Match)) -> Lipid_MA_list2 # Match > Name_general >> HMDB
+
+Lipid_MA_list2[["Unite"]][["Cluster"]] %>% 
+  as.character %>% 
+  cat(., sep = "\n")
+```
+
+
+```{R}
+read_csv("/Users/shibataryohei/Git/RS_mRNALipid-Asthma/ORA/MetaboAnalyst_result_pathway_GC0.8_Centrality1.csv") %>% 
+  rename(Term = `...1`) %>% 
+  right_join(., KEGG_Interest_tbw) %>% 
+  mutate(FDR = qvalue_r(`Raw p`)) %>% 
+  # filter(FDR < 0.2) %>% 
+  .[1:10, ] %>% 
+  mutate(Proportion = Hits/Total * 100) %>% 
+  select(Term, Proportion, `Raw p`, FDR, Impact) %>% 
+  mutate(Term = if_else(FDR <0.1, paste0(Term, "*"), Term)) %>% 
+  mutate(FDR = log(FDR, 10)) %>% 
+  mutate(Term = fct_reorder(Term, `Raw p`, .desc = TRUE)) %>% 
+  
+  ggplot(.,
+       aes(x = -FDR,
+           y = Term, 
+           fill = Proportion,
+           size = Impact)) +
+  geom_vline(xintercept = -log(0.1, 10),
+            color = "gray80",
+            linetype = "dashed")+
+  geom_point(pch = 21)+
+  # scale_color_gradientn(colours = c("navy",
+  #                                "white",
+  #                                "firebrick3"),
+  #                       space = "Lab",
+  #                       na.value = "#C6DBEF",
+  #                       # limits = c(-nes_max, nes_max),
+  #                       guide = guide_colorbar(reverse = F))+
+  theme(strip.text.x = element_blank(),
+        # axis.text.y = ggtext::element_markdown(size = 15),
+        strip.text.y = element_text(size = 14),
+        axis.text = element_text(size = 14),
+        axis.title = element_text(size = 14),
+        legend.key.size = unit(0.3, 'cm'),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 14),
+        panel.spacing = unit(2, "lines"))+
+  labs(x = expression(paste("-log"[10],"-transformed FDR")),
+       y = "KEGG pathway",
+       fill = "Percentage of\nhit components")+
+  scale_size_continuous(range = c(3, 5),
+                        breaks = c(0.0, 0.1, 0.2, 0.3))+
+  scale_fill_viridis_c(breaks = c(2, 5))+
+  xlim(0.75, NA)
+ggsave("ORA/Point_FDR_KEGG_Shared.png",
+       dpi = 600,
+       h = 2.6, w = 7.8)
+```
+![](ORA/Point_FDR_KEGG_Shared.png)
+
+```{R}
+read_csv("/Users/shibataryohei/Git/RS_mRNALipid-Asthma/ORA/MetaboAnalyst_result_pathway_GC0.8_Centrality1.csv") %>% 
+  rename(Term = `...1`) %>% 
+  right_join(., KEGG_Interest_tbw) %>% 
+  mutate(FDR = qvalue_r(`Raw p`)) %>% 
+  filter(FDR < 0.1) %>% 
+  .$Term -> Pathway_SD
+
+
+read_csv("/Users/shibataryohei/Git/RS_mRNALipid-Asthma/ORA/jointpa_matched_features.csv") %>% 
+  rename(Pathway = `...1`) %>%
+  rename(Variable = matched_features) %>% 
+  separate_rows(Variable, sep = "; ") %>% 
+  mutate(Variable = gsub("hsa:|cpd:", "", Variable)) %>% 
+  left_join(Lipid_Annotation_tbw %>%
+               select(Name_metabolon, KEGG) %>% 
+               rename(Variable = KEGG)) %>% 
+  left_join(Ensembl_ENTREZID_tbw %>% 
+              rename(Variable = ENTREZID)) %>% 
+  mutate(Variable = if_else(!is.na(Name_metabolon),
+                            Name_metabolon,
+                            Ensembl)) %>% 
+  select(Pathway, Variable)-> Pathway_Feature_tbw
+
+Pathway_Feature_tbw %>% 
+  filter(Pathway %in% Pathway_SD) %>% 
+  .$Variable -> Pathway_Feature_SD
+```
+
+
+# Drug repurposing
+## Making seeds
+```{R}
+Centrality_tbl_list2 %>% 
+  imap(~ .x %>% 
+  imap(~ .x %>% 
+        # filter(Centrality > 0) %>% 
+        filter(grepl("ENSG", Variable)) %>%
+         rename(Ensembl = Variable) %>% 
+        inner_join(Ensembl_Symbol_tbw) %>% 
+    mutate(Cluster = .y)) %>% 
+    do.call(bind_rows, .) %>% 
+    mutate(Type = .y)) %>%
+  do.call(bind_rows, .) %>% 
+  filter(Type == "Unite") %>% 
+  # filter(Symbol %in% c("ADRB1", "EDNRA", "ERBB2", "ACE")) %>% 
+  # filter(Symbol %in% c("ADRB1", "EDNRA", "ACE", "OXTR", "TRPV1", "HPN", "CXCR2"))
+  select(Symbol) %>% 
+  filter(!is.na(Symbol)) %>% 
+  arrange(Symbol) %>% 
+  write_delim("NeDRex/Table_Symbol.txt",
+              col_names = FALSE)
+  
+Centrality_tbl_list2 %>% 
+  imap(~ .x %>% 
+  imap(~ .x %>% 
+         filter(Centrality > 0) %>% 
+        filter(grepl("ENSG", Variable)) %>%
+         rename(Ensembl = Variable) %>% 
+        inner_join(Ensembl_ENTREZID_tbw) %>% 
+    mutate(Cluster = .y)) %>% 
+    do.call(bind_rows, .) %>% 
+    mutate(Type = .y)) %>%
+  do.call(bind_rows, .) %>% 
+  filter(Type == "Unite") %>% 
+  select(ENTREZID) %>% 
+  arrange(ENTREZID) %>% 
+  mutate(ENTREZID = paste("entrez", ENTREZID, sep = ".")) %>% 
+  write_delim("NeDRex/Table_ENTREZID.txt",
+              col_names = FALSE)
+```
+
+
+## Network
+![](NedRex/Unite_GC0.8_Centrality1.png)
+
+## Network
+![](NedRex/Unite_GC0.8_All.png)
+
+## Trustworthiness score
+```{R}
+read_csv(glue("NeDRex/Unite_GC0.8_All_Edge.csv")) %>% 
+  select(name) %>% 
+  separate(name, into = c("drugbank", "entrez"), sep = " \\(\\-\\) ") %>% 
+  inner_join(read_csv(glue("NeDRex/Unite_GC0.8_All_Node.csv")) %>% 
+               rename(entrez = name,
+                      Symbol = displayName) %>% 
+               select(entrez, Symbol)) %>% 
+  inner_join(read_csv(glue("NeDRex/Unite_GC0.8_All_Node.csv")) %>% 
+               rename(drugbank = name,
+                      Drug = displayName) %>% 
+               select(drugbank, Drug, score)
+             ) -> tbw
+
+tbw %>% 
+  group_by(Drug) %>% 
+ #  mutate(Symbol = as.factor(Symbol)) %>% 
+  arrange(Symbol) %>% 
+  summarise(Gene = str_flatten(Symbol,
+                                collapse = ", ")) -> Drug_Group_tbl
+
+tbw %>% 
+  check_levels("Symbol") -> Symbol_NeDRex
+
+tbw %>% 
+  group_by(Drug) %>% 
+  summarise(score = mean(score)) %>% 
+  inner_join(Drug_Group_tbl) %>% 
+  mutate(score = log(score, 10)) %>% 
+  c2f %>% 
+  arrange(-score) %>% 
+  ungroup %>% 
+  mutate(Drug = fct_reorder(Drug, score)) %>% 
+  mutate(Gene = fct_relevel(Gene,
+                             "ACE",
+                             "ADRB1",
+                             "ERBB2",
+                             "HPN",
+                             "TRPV1",
+                             "ADRB1, ERBB2")) -> Symbol_Drug_tbw
+```
+
+```{R}
+Symbol_Drug_tbw %>% 
+  .[1:10, ] %>% 
+  ggplot(., aes(x = score, y = Drug, fill = Gene))+
+  
+  geom_segment(aes(x = -Inf, xend = score, 
+                   y = Drug, yend = Drug), 
+               color = "gray",
+               linetype="dashed")+
+  geom_point(pch = 21, size = 2)+
+  labs(x = "Log10-transformed trustworthiness score",
+       y = "Drug name",
+       size = "Number of edge")+
+  theme(legend.key.size = unit(0.3, 'cm'))+
+  scale_size_continuous(range = c(1.5, 3), #change the size scale 
+                        breaks = c (1, 2, 3),
+                        labels = c("1", "2", "3"))+
+  theme(strip.text.x = element_blank(),
+        # axis.text.y = ggtext::element_markdown(size = 15),
+        strip.text.y = element_text(size = 10),
+        axis.text = element_text(size = 10),
+        axis.title = element_text(size = 10),
+        legend.key.size = unit(0.3, 'cm'),
+        legend.text = element_text(size = 10),
+        legend.title = element_text(size = 10),
+        panel.spacing = unit(2, "lines"))
+ggsave("NeDRex/Lollipop_Trust_Drug.png",
+       dpi = 600, h = 1.7, w = 5.25)
+```
+![](NeDRex/Lollipop_Trust_Drug.png)
+
+
+
+
+## Confirmaiton
+```{R}
+mRNA_dds -> mRNA_Analysis_dds
+
+mRNA_Analysis_dds %>% 
+  .[, colnames(.) %in% study_id_Analysis] -> mRNA_Analysis_dds
+
+colData(mRNA_Analysis_dds)$asthma_epi_6yr %>% 
+  relevel(., ref = "0") -> colData(mRNA_Analysis_dds)$asthma_epi_6yr
+
+DESeqDataSet(mRNA_Analysis_dds,
+             design = ~  asthma_epi_6yr) -> mRNA_Analysis_dds #
+
+mRNA_Analysis_dds %>%
+  DESeq -> mRNA_Analysis_DESeq
+
+mRNA_Analysis_DESeq %>% 
+  results %>% 
+  as.data.frame %>% 
+  r2c("Ensembl") %>% 
+  inner_join(Ensembl_Symbol_tbw %>% 
+               filter(Symbol %in% c("ERBB2", "ADRB1")))
+```
+
+
+## Interaction of hub genes
+```{R}
+GradCam_Hot_tbl_list2 %>% 
+  .[["Unite"]] %>% 
+  .[["Cluster"]] %>% 
+  filter(grepl("ENSG00000141736|ENSG00000043591", Variable)) %>% 
+  mutate(Ensembl = if_else(grepl("ENSG00000141736", Variable),
+                        "ENSG00000141736", "ENSG00000043591")) %>% 
+  inner_join(Ensembl_Symbol_tbw) %>% 
+  select(Ensembl, Symbol, Variable) %>% 
+  arrange(Symbol) %>% 
+  table2png("NeDRex/Table_Target_Interaction.png")
+
+
+GradCam_Hot_tbl_list2 %>% 
+  .[["Unite"]] %>% 
+  .[["Cluster"]] %>% 
+  # filter(grepl("ENSG00000158301", Variable)) %>% 
+  filter(grepl("TAG44\\:0FA14\\:0", Variable)) 
+```
+![](NeDRex/Table_Target_Interaction.png)
+
+# Table 2
+
+
+```{R}
+
+pmap(list(Centrality_tbl_list2,
+          names(Centrality_tbl_list2)),
+          function(tbl_list, type){
+  tbl_list %>% 
+  imap(~ .x %>% 
+        left_join(., Ensembl_Symbol_tbw %>% 
+                    rename(Variable = Ensembl)) %>% 
+         mutate(Type = type) %>% 
+         mutate(Cluster = .y)) %>% 
+    do.call(bind_rows, .) %>% 
+  mutate(Centrality = round(Centrality, 1)) %>% 
+  select(Type, Cluster, Variable, Symbol, Centrality) %>% 
+  mutate(Symbol = if_else(is.na(Symbol), "", paste(Symbol)))}) -> Centrality_table_list
+
+Centrality_table_list[["Separate"]] %>% 
+  do.call(bind_rows, .) %>% 
+  mutate(Cluster = gsub("Cluster", "", Cluster)) %>% 
+  group_by(Variable) %>% 
+  summarise(Cluster = str_flatten(Cluster, "+")) %>% 
+  c2f -> Variable_Cluster_tbl
+
+Centrality_table_list[["Unite"]] %>% 
+  c2f %>% 
+  select(-Type, -Cluster) %>% 
+  inner_join(Variable_Cluster_tbl) %>% 
+  ungroup %>% 
+  mutate(Data = if_else(grepl("\\:", Variable), "Lipid",
+                        if_else(grepl("ENSG", Variable), "mRNA",
+                                      "Clinical factor"))) %>% 
+   mutate(Variable = if_else(Symbol == "", 
+                            Variable,
+                            Symbol)) %>% 
+  filter(Centrality > 100) %>% 
+  mutate(NeDRex = case_when(Data != "mRNA" ~ "-",
+                            Variable %in% Symbol_NeDRex ~ "Yes",
+                            (!Variable %in% Symbol_NeDRex) & Data == "mRNA" ~ "No")) %>% 
+  mutate(Pathway = if_else(Variable %in% Pathway_Feature_SD, "Yes",
+                          if_else(Data == "Clinical factor", "-", "No"))) %>% 
+  rename(Component = Variable) %>% 
+  select(Component, Data, Cluster, Centrality, Pathway, NeDRex) -> Centrality_Target_table
+
+table2png(Centrality_Target_table,
+          "GradCam/Table_Centrality_Target.png")
+  
+sjPlot::tab_df(Centrality_Target_table,
+               col.header = names(Centrality_Target_table),
+               file = "GradCam/Table_Centrality_Target.doc")
+```
+![](GradCam/Table_Centrality_Target.png)

@@ -1,0 +1,526 @@
+---
+title: "01. Preprocess"
+subtitle: "December 15th, 2023"
+author: "Ryohei SHIBATA"
+---
+
+```{R, include = FALSE, warning = FALSE}
+knitr::opts_chunk$set(echo = FALSE, 
+                      eval = FALSE, 
+                      warning = FALSE, 
+                      message = FALSE, 
+                      comment = "",
+                      cache = FALSE) 
+
+Sys.setlocale("LC_ALL",
+              'UTF-8')
+options(scipen = 10)
+```
+
+```{R}
+source("Library.R")
+source("Function.R")
+source("FeatureSelection_Dualomics.R")
+source("FeatureSelection_Clinical.R")
+```
+
+# Preparation
+## Objects
+* `Clinicaldata_tbw`,
+* `mRNA_RA_RAW_tbl`, 
+* `Lipid_Species_tbl`, 
+
+
+# Clinicaldata
+## study_id
+```{R}
+Clinicaldata_tbw %>% 
+  select(study_id, asthma_epi_6yr) %>% 
+       filter(!is.na(asthma_epi_6yr)) -> Asthma_tbw
+
+intersect(Asthma_tbw %>% 
+            check_levels("study_id"),
+          mRNA_RA_RAW_tbl %>% 
+            check_levels("study_id")) %>% 
+  intersect(., 
+            Lipid_Species_tbl %>% 
+            check_levels("study_id")) %>% 
+  as.character -> study_id_Analysis
+```
+
+## Analytic cohort
+
+## Check clinicaldata
+```{R}
+Clinicaldata_tbw %>% 
+  select(!matches("asthma_|recurrent|region|site|cohort|enrolled|Shannon|Simpson|OTU|quality|LOS|RW|month|year|season")) %>% 
+  select(-RSVandRV, -RnaseP, -SampleID_NPA,
+         -IntensiveTreatment, -gestage,
+         -inpatient_location___3,
+         -intake_child_weight_born,
+         -intake_insurance,
+         -mo12_solidfood,
+         -intake_income,
+         -intake_overnight_hosp) %>% 
+  mutate_if(grepl("NPAseq", names(.)), funs(if_else(is.na(.), "0", paste(.)))) %>% 
+  mutate(intch_wheezing = if_else(intch_wheezing == "Not documented",
+                                  NA, intch_wheezing)) %>% 
+  mutate_if(is.factor, droplevels) %>% 
+  c2f -> Clinicaldata_LR_tbw
+
+Clinicaldata_LR_tbw %>% names
+
+Clinicaldata_LR_tbw %>%
+  select(matches("ISAC|IgE|ige")) %>% summary
+
+Clinicaldata_LR_tbw %>% 
+  select_if(is.factor) %>% 
+  gather(Variable, Value, -study_id) %>% 
+  group_by(Variable, Value) %>% 
+  summarise() %>% 
+  group_by(Variable) %>% 
+  summarise(Count = n()) %>% 
+  filter(Count == 1) %>% 
+  .$Variable -> Variable_Onelevel
+
+Clinicaldata_LR_tbw %>% 
+  select(!Variable_Onelevel) %>% 
+  select(-Age_mo, -intake_sex, -raceethn) %>% 
+  names() %>% 
+  .[-1] -> Exposures
+
+Exposures %>% sort
+
+map(Exposures, function(x){
+  Clinicaldata_LR_tbw %>% 
+        inner_join(Asthma_tbw) %>% 
+    rename(Exposure = x) %>% 
+  glm(asthma_epi_6yr ~ Exposure + Age_mo + intake_sex + raceethn,
+      family = "binomial"(link = "logit"),
+      data = .) %>% 
+      broom.mixed::tidy(.,
+                        conf.int = TRUE,
+                        exponentiate = TRUE) %>% 
+    mutate(Variable = x)
+}) -> list
+
+list %>% 
+  do.call(bind_rows, .) %>% 
+  filter(grepl("Exposure", term)) %>% 
+  filter(p.value < 0.05) %>% 
+  mutate(term = Variable) %>% 
+  select(-Variable) %>% 
+  arrange(p.value) %>% 
+  mutate(P.value = as.character(p.value)) %>% 
+  tidy_table() %>% 
+  mutate(p.value = as.numeric(P.value)) %>% 
+  select(-P.value) %>% 
+  rename(Variable = term) -> LR_Clinical_tbw
+
+LR_Clinical_tbw %>% 
+  write_csv("ClinicalmRNALipid.csv")
+
+LR_Clinical_tbw %>% 
+  filter(!Variable %in% c("species_RV_NPAseq", "RSVonly", "RSV_not_solo",
+                          "RVonly", "genotype_RV_NPAseq",
+                          "corticosteroids_pre_inp", "corticosteroids_recent", "corticosteroids_pre",
+                          "atopy_ISAC_any", "index_bp_woari", #  atopy_ISAC_food19
+                          "intake_rsvshot", "intch_wheezing", "mata_antibiotics_b4labor", "intch_alb_epi", # NA
+                          "inpatient_cpap", "inpatient_hfo")) %>% 
+  .$Variable -> Feature_Clinical
+```
+
+```{R}
+Clinicaldata_LR_tbw %>%
+  filter(study_id %in% study_id_Analysis) %>%
+  select(study_id,
+         Feature_Clinical) -> Clinicaldata_NN_tbw
+
+Clinicaldata_NN_tbw %>% summary
+
+Clinicaldata_NN_tbw %>% 
+  mutate(RVC_NPAseq = if_else(is.na(RVC_NPAseq), 0, 1)) %>%
+  mutate(prev_breathingprob = if_else(prev_breathingprob == "0", 0, 1)) %>% 
+  mutate(intake_eczema_history = if_else(intake_eczema_history == "No", 0, 1)) %>% 
+  # mutate(intake_rsvshot = if_else(intake_rsvshot == "No", 0, 1)) %>% 
+  # mutate(intch_wheezing = if_else(intch_wheezing == "No", 0, 1)) %>% 
+  # mutate(mata_antibiotics_b4labor = if_else(mata_antibiotics_b4labor == "No", 0, 1)) %>% 
+  mutate_if(is.factor, as.character) %>% 
+  mutate_if(is.character, as.numeric) %>% 
+  gather(Variable, Value, -study_id) %>%
+  mutate(Value = as.numeric(as.character(Value))) %>%
+  mutate(study_id = as.factor(study_id)) %>% 
+  c2f -> Clinical_tbl
+
+Clinicaldata_NN_tbw %>% 
+  select_if(is.numeric) %>% 
+  names -> Variable_Con
+```
+
+## Omics
+```{R}
+list(Omics1 = mRNA_RA_RAW_tbl %>% 
+       ungroup %>% 
+       rename(Variable = Ensembl) %>% 
+       filter(study_id %in% study_id_Analysis) %>% 
+       remove_all0 %>% 
+       remove_iqr0 %>% 
+       c2f,
+     
+     Omics2 = Lipid_Species_tbl %>% 
+       filter(study_id %in% study_id_Analysis) %>%
+       ungroup %>% 
+     #   spread(Variable, Value) %>%
+     # c2r("study_id") %>%
+     # IMIFA::pareto_scale(.,
+     #                  centering = FALSE) %>%
+     #   r2c("study_id") %>%
+     #   gather(Variable, Value, -study_id) %>%
+      remove_all0 %>% 
+       remove_iqr0 %>% 
+       c2f
+     ) -> Dualomics_tbl_list
+
+map(Dualomics_tbl_list,
+    ~ .x %>% 
+      check_levels("Variable") %>% 
+      length)
+
+# Model
+Feature_model <- as.formula("asthma_epi_6yr ~ Value + 
+                                   raceethn + 
+                                   Age_mo + intake_sex")
+
+Dualomics_tbl_list[[2]] %>% 
+  check_levels("Variable") %>% length
+```
+
+# Feature selection
+```{R}
+Pvalue_Cutoff1 <- 0.05
+Pvalue_Cutoff2 <- 0.00005
+Pvalue_Cutoff3 <- 0.00005
+
+# source("FeatureSelection_Dualomics.R")
+source("FeatureSelection_Dualomics_YJT.R")
+source("FeatureSelection_Clinical11.R")
+```
+
+## Distribution
+```{R}
+ClinicalDualomicsProduct_LRSD_tbl_list %>% 
+  imap(., function(tbl, data){
+    
+    tbl %>% 
+      check_levels("Variable") -> var
+    
+  if(length(var) > 100){
+  tbl %>% 
+  filter(Variable %in% sample(var, 100)) -> tbl} else {
+    tbl %>% 
+  filter(Variable %in% var) -> tbl}
+    
+    
+  tbl %>% 
+    mutate(Data = data)}) %>% 
+  do.call(bind_rows, .) -> tbl
+
+tbl %>% 
+  ggplot(.,
+       aes(x = Value, y = ..scaled.., fill = Variable))+
+  geom_density(alpha = 0.3)+
+  guides(fill = FALSE)+
+  facet_wrap( ~ Data, scale = "free", nrow = 2)
+
+ggsave("Distribution/Density_Dualomics_Scale.png",
+       dpi = 300,
+       h = 4.5, w = 10)
+
+```
+
+
+## 
+```{R}
+ClinicalDualomicsProduct_LRSD_tbl_list %>% 
+  map(~ .x %>%
+        check_levels("Variable") %>% 
+        length) %>% 
+  do.call(c, .)
+
+ClinicalDualomicsProduct_LRSD_tbl_list %>% 
+  map(~ .x %>%
+        check_levels("Variable") %>% 
+        length) %>% 
+  do.call(c, .) %>% 
+  sum
+
+ClinicalDualomicsProduct_LRSD_tbl_list %>% 
+  map(~ .x %>%
+        check_levels("study_id") %>% 
+        length) %>% 
+   do.call(c, .)
+```
+
+
+# Output
+```{R}
+ClinicalDualomicsProduct_tbw %>% 
+  arrange(study_id) %>% 
+  c2r("study_id") %>% 
+  .[study_id_Analysis, , drop = FALSE] -> x_df
+
+dim(x_df)
+write_csv(x_df,
+          "/Users/shibataryohei/Library/CloudStorage/OneDrive-MassGeneralBrigham/MARC35/NN/ClinicalmRNALipidProduct_Value.csv")
+  
+Asthma_tbw %>% 
+  filter(study_id %in% study_id_Analysis) %>% 
+  arrange(study_id) %>% 
+  c2r("study_id") %>% 
+  .[study_id_Analysis, , drop = FALSE] -> y_df
+write_csv(y_df,
+          "/Users/shibataryohei/Library/CloudStorage/OneDrive-MassGeneralBrigham/MARC35/NN/ClinicalmRNALipidProduct_Asthma.csv")
+
+
+data.frame(x = rownames(x_df),
+           y = rownames(y_df)) %>% 
+  mutate(Judge = if_else(x == y, TRUE, FALSE)) %>% 
+  filter(isFALSE(Judge))
+
+# drive_auth()
+drive_upload(media = "/Users/shibataryohei/Library/CloudStorage/OneDrive-MassGeneralBrigham/MARC35/NN/ClinicalmRNALipidProduct_Value.csv",
+             overwrite = TRUE,
+            path = "00_Colab/Tao/inputs/ClinicalmRNALipidProduct_Value.csv")
+
+drive_upload(media = "/Users/shibataryohei/Library/CloudStorage/OneDrive-MassGeneralBrigham/MARC35/NN/ClinicalmRNALipidProduct_Asthma.csv",
+             overwrite = TRUE,
+            path = "00_Colab/Tao/inputs/ClinicalmRNALipidProduct_Asthma.csv")
+```
+
+
+# Random forest
+```{R}
+drive_download("00_Colab/Tao/outputs/X_train_sm.csv",
+               path = "/Users/shibataryohei/Library/CloudStorage/OneDrive-MassGeneralBrigham/MARC35/NN/X_train_sm.csv",
+               overwrite = TRUE)
+drive_download("00_Colab/Tao/outputs/X_test.csv",
+               path = "/Users/shibataryohei/Library/CloudStorage/OneDrive-MassGeneralBrigham/MARC35/NN/X_test.csv",
+               overwrite = TRUE)
+drive_download("00_Colab/Tao/outputs/y_train_sm.csv",
+               path = "/Users/shibataryohei/Library/CloudStorage/OneDrive-MassGeneralBrigham/MARC35/NN/y_train_sm.csv",
+               overwrite = TRUE)
+drive_download("00_Colab/Tao/outputs/y_test.csv",
+               path = "/Users/shibataryohei/Library/CloudStorage/OneDrive-MassGeneralBrigham/MARC35/NN/y_test.csv",
+               overwrite = TRUE)
+
+read_csv("/Users/shibataryohei/Library/CloudStorage/OneDrive-MassGeneralBrigham/MARC35/NN/X_train_sm.csv")  %>% 
+  as.data.frame -> X_train_sm_df
+
+read_csv("/Users/shibataryohei/Library/CloudStorage/OneDrive-MassGeneralBrigham/MARC35/NN/X_test.csv") %>% 
+  as.data.frame -> X_test_df
+
+read_csv("/Users/shibataryohei/Library/CloudStorage/OneDrive-MassGeneralBrigham/MARC35/NN/y_train_sm.csv") %>% 
+  as.data.frame %>% 
+  mutate_all(as.factor) -> y_train_sm_df
+
+read_csv("/Users/shibataryohei/Library/CloudStorage/OneDrive-MassGeneralBrigham/MARC35/NN/y_test.csv") %>% 
+  as.data.frame %>% 
+  mutate_all(as.factor)  -> y_test_df
+
+ncol(X_train_sm_df)
+# Proxy
+X_train_sm_df %>% 
+  colnames %>% 
+  data.frame(Variable = .) %>% 
+  mutate(Proxy = paste0("Proxy", 1:nrow(.))) -> Variable_Proxy_tbl
+
+dim(X_train_sm_df)
+```
+
+
+```{R}
+list(NonCinical = Variable_Proxy_tbl %>% 
+       filter(!grepl("Clinical", Variable)) %>% 
+       .$Variable,
+     ClinicalmRNA = Variable_Proxy_tbl %>% 
+       filter(grepl("Omics1__|Clinical__|ClinicalOmics1__", Variable)) %>% 
+       .$Variable,
+     ClinicalLipid = Variable_Proxy_tbl %>% 
+       filter(grepl("Omics2__|Clinical__|ClinicalOmics2__", Variable)) %>% 
+       .$Variable,
+     Non3 = Variable_Proxy_tbl %>% 
+       filter(!grepl("ClinicalDualomics", Variable)) %>% 
+       .$Variable,
+     All = Variable_Proxy_tbl %>% .$Variable) -> Variable_list
+
+
+map(Variable_list, length)
+```
+
+```{R}
+Variable_list[[1]] -> var
+map(Variable_list, function(var){
+  
+  X_train_sm_df[, var] -> x_train_df
+    
+    Variable_Proxy_tbl %>% 
+    filter(Variable %in% colnames(x_train_df) ) %>% 
+      c2r("Variable") %>% 
+      .[colnames(x_train_df), ] -> colnames(x_train_df)
+    
+  X_test_df  -> x_test_df
+  
+    Variable_Proxy_tbl %>% 
+    filter(Variable %in% colnames(x_test_df)) %>% 
+      c2r("Variable") %>% 
+      .[colnames(x_test_df), ] -> colnames(x_test_df)
+    
+randomForest::randomForest(y_train_sm_df$asthma_epi_6yr ~ .,
+                           data = x_train_df,
+                           importance = TRUE, 
+                           # mtry = ncol(x_train_df)^(1/2), 
+                           ntree = 1000) -> rf_model
+predict(rf_model,
+        newdata = x_test_df,
+        type = "prob") -> predictions_prob
+
+predict(rf_model,
+        newdata = x_test_df,
+        type = "response") -> predictions_reponse
+
+confusion_matrix <- table(predictions_reponse,
+                          y_test_df$asthma_epi_6yr)
+
+data.frame(N = ncol(X_test_df[, var]),
+           #Omics = omics,
+           Accuracy = sum(diag(confusion_matrix)) / sum(confusion_matrix),
+           AUC = pROC::roc(y_test_df$asthma_epi_6yr,
+                          predictions_prob[, 2])  %>% 
+                          pROC::auc(.) %>% 
+                          as.numeric)}) ->  Omics_rf_tbw_list
+
+Omics_rf_tbw_list[["All"]] -> Omics_rf_tbw
+
+Omics_rf_tbw_list %>% 
+  imap(~ .x %>% 
+        mutate(Data = .y)) %>% 
+  do.call(bind_rows, .) %>% 
+  table2png("RandomForest/Table_RF_Data.png")
+```
+
+```{R}
+X_train_sm_df -> x_train_df
+    
+Variable_Proxy_tbl %>% 
+    filter(Variable %in% colnames(x_train_df) ) %>% 
+    c2r("Variable") %>% 
+    .[colnames(x_train_df), ] -> colnames(x_train_df)
+    
+X_test_df  -> x_test_df
+  
+    Variable_Proxy_tbl %>% 
+    filter(Variable %in% colnames(x_test_df)) %>% 
+    c2r("Variable") %>% 
+    .[colnames(x_test_df), ] -> colnames(x_test_df)
+    
+    
+map(1:10,
+    function(x){
+      randomForest::randomForest(y_train_sm_df$asthma_epi_6yr ~ .,
+                           data = x_train_df,
+                           importance = TRUE, 
+                           # mtry = ncol(x_train_df)^(1/2), 
+                           ntree = 1000) %>% 
+              .$importance %>% 
+           as.data.frame %>% 
+           rownames_to_column(., "Variable") %>% 
+           mutate(Iteration = x)
+    }) -> list
+  
+list %>% 
+  do.call(bind_rows, .) %>%
+  mutate_if(is.character, as.factor) %>% 
+  mutate(Variable = gsub("_", " ", Variable)) %>% 
+  mutate(Variable = fct_reorder(Variable, MeanDecreaseAccuracy, median)) -> MbAge_Gini
+
+MbAge_Gini %>% 
+  rename(Proxy = Variable) %>% 
+  
+  inner_join(Variable_Proxy_tbl) %>% 
+  group_by(Variable) %>% 
+  summarise(MeanDecreaseAccuracy = mean(MeanDecreaseAccuracy)) %>% 
+  arrange(-MeanDecreaseAccuracy) %>% 
+  .[1:25, ] %>% 
+  table2png("RandomForest/Table_Gini.png")
+```
+
+
+
+
+## Summary
+```{R}
+# mRNALipidClinical
+list(Omics1 = Dualomics_tbl_list[[1]],
+     Omics2 = Dualomics_tbl_list[[2]],    
+     Clinical = Clinical_tbl,
+     Dualomics = Dualomics_Product_tbl,
+     ClinicalOmics1 = ClinicalOmics_Product_tbl_list[[1]],
+     ClinicalOmics2 = ClinicalOmics_Product_tbl_list[[2]],
+     ClinicalDualomics = ClinicalDualomics_Product_tbl) -> ClinicalOmicsProduct_tbl_list
+
+ClinicalOmicsProduct_tbl_list %>% 
+  imap(., function(tbl, data){data.frame(Data = data,
+               Raw = tbl %>% 
+      check_levels("Variable") %>% 
+        length)}) %>% 
+  do.call(bind_rows, .) -> Feature_Raw_tbl
+
+list(Omics1 = Dualomics_Scale_tbl_list[[1]],
+     Omics2 = Dualomics_Scale_tbl_list[[2]] ,
+     Clinical = Clinical_Scale_tbl,
+     Dualomics = Dualomics_Product_Scale_tbl,
+     ClinicalOmics1 = ClinicalOmics_Product_Scale_tbl_list[[1]],
+     
+     ClinicalOmics2 = ClinicalOmics_Product_Scale_tbl_list[[2]],
+     ClinicalDualomics = ClinicalDualomics_Product_Scale_tbl ) %>% 
+  map(~ .x %>% 
+        check_levels("Variable")) %>% 
+  imap(., function(v, data){data.frame(Data = data,
+               Scale = length(v))}) %>% 
+   do.call(bind_rows, .)  -> Feature_Scale_tbl
+
+ClinicalDualomicsProduct_LRSD_tbl_list %>% 
+  map(~ .x %>% 
+        check_levels("Variable")) %>% 
+  imap(., function(v, data){data.frame(Data = data,
+               LR = length(v))}) %>% 
+   do.call(bind_rows, .) -> Feature_LR_tbl
+
+inner_join(Feature_Raw_tbl,
+           Feature_Scale_tbl) %>% 
+  inner_join(.,
+          Feature_LR_tbl) %>% 
+  table2png("RandomForest/Table_Feature.png")
+
+Clinical_tbl %>% 
+  check_levels("Variable") %>% 
+  length -> N_Clinical
+
+data.frame(mRNA = "RA",
+           Lipid = "RAW",
+           Clinical = glue("Clinicaldata{N_Clinical}, binary (-1,1)"),
+           Scale = "without addmin_log",
+           Model = paste(Feature_model[3]),
+           Threshold = glue::glue("p<{Pvalue_Cutoff1}, p<{Pvalue_Cutoff2}, p<{Pvalue_Cutoff3}")) %>% 
+  bind_cols(Omics_rf_tbw) %>% 
+  t %>% 
+  as.data.frame %>% 
+  rename(Value = V1) %>% 
+  r2c("Variable") %>% 
+  table2png("RandomForest/Table_RF.png")
+  
+```
+
+![](mRNALipidClinical/Table_Feature.png)
+![](mRNALipidClinical/Table_RF.png)
+
