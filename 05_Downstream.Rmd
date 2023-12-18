@@ -1,11 +1,7 @@
 ---
-title: "CNN"
-subtitle: "April 24th, 2023"
+title: "03. GradCam"
+subtitle: "December 15th, 2023"
 author: "Ryohei SHIBATA"
-output:
-  powerpoint_presentation:
-    slide_level: 2 # use this to override default
-    reference_doc: ~/Git/R/Template_ENW.pptx
 ---
 
 ```{R, include = FALSE, warning = FALSE}
@@ -17,36 +13,27 @@ knitr::opts_chunk$set(echo = FALSE,
                       cache = FALSE) 
 ```
 
-# Setup
 ```{R}
-source("Setup.R")
+source("Library.R")
+source("Function.R")
 ```
 
-# Best model
-
-## fragrant-music-129
-* Used raw lipidome data
-* Inverse transformed transcriptome and lipidome data
-* AUC = 0.869
-
-
-## GradCam by python
-![](/Users/shibataryohei/Git/RS_mRNALipid-Asthma/GradCam/fragrant-music-129.png)
-
+# Note
+## Coding rules
+* `_tbw`, tibble class object (wide type)
+* `_tbl`, tibble class object (long type, i.e., tidy data)
+* `_df`, data frame class object
+* `_list`, list class object
 
 ## GradCam by R
 ```{R}
 # Reproduce the gradcam image from array
-# class_cam[0]
-path_gd = "00_Colab/Tao/Best_ClmRLi_AllTAG_Inv/"
-path_od = "/Users/shibataryohei/Library/CloudStorage/OneDrive-MassGeneralBrigham/MARC35/NN/"
-
 map(list(0, 1), function(i){
-  drive_download(glue("{path_gd}gradcam/Coord_GradCam{i}.csv"),
-               path = glue("{path_od}Coord_GradCam{i}.csv"),
+  drive_download(glue("gradcam/Coord_GradCam{i}.csv"),
+               path = glue("Coord_GradCam{i}.csv"),
                overwrite = TRUE)
   
-  read_csv(glue("{path_od}Coord_GradCam{i}.csv"),) %>% 
+  read_csv(glue("Coord_GradCam{i}.csv"),) %>% 
   mutate(coords1 = 0:(nrow(.)-1)) %>% 
   gather(coords0, Value, -coords1) %>% 
   mutate(coords0 = as.numeric(coords0)) %>% 
@@ -58,8 +45,7 @@ names(Coords_GradCam_tbl_list) <- c("0", "1")
 ```
 
 ```{R}
-# 0.25
-fs_threshold = 0.8 # 0.6 is best at 08/23/2023
+fs_threshold = 1-0.2
   
 Coords_GradCam_tbl_list %>% 
   map(~ .x %>% filter(Value > (1 - fs_threshold))) -> Coords_GradCam_Hot_tbl_list
@@ -74,10 +60,6 @@ Coords_GradCam_Hot_tbl_list %>%
     xlim(0, 227)) %>% 
   ggpubr::ggarrange(plotlist = .,
                     labels = c("0.", "1."),
-                    # hjust = -1,
-                    # vjust = -1,
-                    # heights = c(1, 1, 1),
-                    # widths = c(1, 1, 1),
                     nrow = 1) -> Heatmap_GradCam_gg
                  
 ggsave("GradCam/Heatmap_GradCam.png",
@@ -89,12 +71,7 @@ ggsave("GradCam/Heatmap_GradCam.png",
 
 ## GradCam by R
 ```{R}
-
-# drive_download(glue("{path_gd}gradcam/Coords_IT.csv"),
-#                path = "~/Library/CloudStorage/OneDrive-MassGeneralBrigham/MARC35/NN/Coords_IT.csv",
-#                overwrite = TRUE)
-
-read_csv("~/Library/CloudStorage/OneDrive-MassGeneralBrigham/MARC35/NN/Coords_IT.csv")  %>% 
+read_csv("gradcam/Coords_IT.csv")  %>% 
   as.data.frame %>% 
   as_tibble %>% 
   mutate(y_coords = 227 - coord0) %>% 
@@ -128,25 +105,12 @@ Coords_IT_Hot_tbl_list %>%
 
 ggpubr::ggarrange(plotlist = Point_Feature_GradCam_gg,
                   labels = c("0", "1"),
-                  # font.label = list(size = 18),
-                  # heights = c(1, 1.1),
-                  # widths = c(1, 1.5),
                   nrow = 1) %>% 
   ggsave("GradCam/Point_Feature_GradCam.png",
          plot = .,
        dpi = 300, h = 3, w = 9)
 ```
-![Use Asthma = 1 GradCam data.](GradCam/Point_Feature_GradCam.png)
-
-## Hot number
-```{R}
-Coords_IT_Hot_tbl_list[["1"]] %>% 
-  filter(Hot == "1") %>% 
-  group_by(Data) %>% 
-  summarise(Count = n())
-
-```
-
+![](GradCam/Point_Feature_GradCam.png)
 
 # Network
 ```{R}
@@ -154,20 +118,12 @@ Coords_IT_Hot_tbl_list[["1"]] %>%
         filter(Hot == "1") %>% 
   mutate(Cluster = case_when(y_coords > 170 & x_coords < 80 ~ "Cluster1",
                              y_coords > 170 & x_coords > 80 & x_coords < 122.5 ~ "Cluster2",
-                             y_coords > 170 & x_coords > 122.5 ~ "Cluster3",
-                             y_coords > 130 & y_coords < 170 ~ "Cluster4",
-                              y_coords < 130 & y_coords > 90  ~ "Cluster5",
-                              y_coords < 90  ~ "Cluster6"
+                             y_coords > 170 & x_coords > 122.5 ~ "Cluster2",
+                             y_coords > 130 & y_coords < 170 ~ "Cluster2",
+                              y_coords < 130 & y_coords > 90  ~ "Cluster3",
+                              y_coords < 90  ~ "Cluster4"
                              )) %>%
-  mutate(Cluster = fct_recode(Cluster,
-                              "Cluster2" = "Cluster3",
-                              "Cluster2" = "Cluster4",
-                              "Cluster3" = "Cluster5",
-                              "Cluster4" = "Cluster6")) %>% 
-  # mutate(Cluster = "Cluster") %>% 
-  # filter(is.na(Cluster))
   select(Data, Variable, Cluster) %>% 
-  
     split(., .$Cluster) -> GradCam_Hot_Separate_tbl_list
 
 Coords_IT_Hot_tbl_list[["1"]] %>% 
@@ -184,10 +140,6 @@ list(Separate = GradCam_Hot_Separate_tbl_list,
 
 map(GradCam_Hot_tbl_list2, function(tbl_list){
 map(tbl_list, function(tbl){
-  
-# tbl %>% 
-#     mutate(Variable = gsub("ENSG", "ENSG\n", Variable)) %>%
-#   mutate(Variable = gsub("\\(", "\n\\(", Variable)) -> tbl
   
   tbl %>% 
   filter(Data %in% c("Omics1", "Omics2", "Clinical")) %>%
@@ -266,7 +218,7 @@ map2(igraph_RAW_list2, Edge_tbl_list2, function(igraph_list, tbl_list){
 map2(igraph_list,
     tbl_list,
     function(igraph, tbl){
-  igraph::betweenness(igraph) %>% # 媒介中心性
+  igraph::betweenness(igraph) %>%
   data.frame(Centrality = .) %>%
   arrange(-Centrality) %>%
   r2c("Variable") %>%
@@ -276,7 +228,6 @@ map2(igraph_list,
   arrange(desc(Centrality)) %>% 
   ungroup %>% 
   mutate(Centrality_Scale = bestNormalize::yeojohnson(Centrality)$x.t) %>% 
-  # mutate(Centrality_Scale = Centrality_Scale^2) %>% 
   mutate(Centrality_Label = scales::rescale(Centrality_Scale, to = c(1, 8))) %>% 
   mutate(Centrality_Text = scales::rescale(Centrality_Scale, to = c(0.5, 2)))
       })}) -> Centrality_tbl_list2
@@ -289,21 +240,10 @@ Centrality_tbl_list2 %>%
 # Based on highest frequency among clusters
 Connection_tbl_list2[["Separate"]] %>%
   c2f -> Feature_Cluster_tbl
-
-# Based on cluster
-# imap(Feature_Cluster_list2[["Separate"]],
-#     ~ data.frame(Variable = .x,
-#                  Cluster = .y)) %>%
-#   do.call(bind_rows, .) %>%
-#   mutate(Cluster = gsub("Cluster", "", Cluster)) %>%
-#   group_by(Variable) %>%
-#   summarise(Cluster = str_c(Cluster, collapse = "+")) %>%
-#   c2f -> Feature_Cluster_tbl
 ```
 
 
 ```{R}
-
 map2(igraph_RAW_list2, Centrality_tbl_list2, function(igraph_list, tbl_list){
 map2(igraph_list,
     tbl_list,
@@ -323,14 +263,9 @@ map2(igraph_list,
   mutate(Shape = case_when(Data == "mRNA" ~ "square",
                            Data == "Lipid" ~ "circle",
                            Data == "Clinical" ~ "square")) %>% 
-  # mutate(Text_Bold = if_else(Variable %in% Feature_Single, 2, 1)) %>% 
     mutate(Text_Bold = 2) %>% 
-  # mutate(Frame_Color = if_else(Variable %in% Feature_Single, "blue", "black")) %>% 
-  # mutate(Text_Size = 2) %>% 
-  # mutate(Label_Size = 2) %>% 
          inner_join(Feature_Cluster_tbl) %>% 
   inner_join(tbl) %>% 
-  # mutate(Betweenness_Text = if_else(Betweenness < 5, NA, Betweenness_Text)) %>% 
   mutate(Variable = if_else(Centrality < 100, "", Variable)) %>% 
          left_join(., Ensembl_Symbol_tbw %>% 
                      rename(Variable = Ensembl)) %>% 
@@ -350,26 +285,19 @@ pmap(list(igraph_list,
        
 num.of.v <- length(V(igraph))
 V(igraph)$color <- as.character(tbw$Color) 
-# V(igraph)$shape <- tbw$Shape
-
 V(igraph)$shape <- tbw$Cluster
-
-# V(igraph)$vertex.frame.color <- as.character(Vertex_Parameters_tbw$Frame_Color) 
 
 ## label
 V(igraph)$label <- tbw$Variable
-V(igraph)$size <- tbw$Centrality_Label # labelの大きさ
+V(igraph)$size <- tbw$Centrality_Label
 
 V(igraph)$label.font  <- tbw$Text_Bold
 V(igraph)$label.cex <- tbw$Centrality_Text
 V(igraph)$vertex.frame.width <- tbw$Text_Bold
 
 # Edge
-# E(igraph)$lty <- Correlation_Network_tbl$Linetype
 E(igraph)$lwd <- tbl$Connection
-
 igraph})}) -> igraph_list2
-
 
 RCy3::createNetworkFromIgraph(
   igraph_list2[["Unite"]][["Cluster"]],
@@ -400,64 +328,13 @@ plot(simplify(igraph),
      edge.arrow.size = 0,
      vertex.label.family = "Arial", 
      vertex.label.color = "black",
-     # vertex.color = colors[membership(Network_Group)],
-     layout = layout_with_dh(igraph)) # layout_on_sphere # layout_with_dh
+     layout = layout_with_dh(igraph))
 dev.off()})})
 ```
 
 
-
 ## Network, Cluster
 ![](Network/Network_Unite_Cluster.png)
-
-# Features
-## Lipid, Class
-```{R}
-Group_Class_Species_tbl %>% 
-  check_levels("Class") -> Lipid_Class
-
-map(Lipid_Class, function(x){
-Feature_Cluster_list2[["Unite"]][["Cluster"]] %>% 
-  .[grepl("\\:", .)] %>% 
-  data.frame(Species = .) %>% 
-  mutate(GradCam = "1") %>% 
-  right_join(Group_Class_Species_tbl) %>% 
-  mutate(GradCam = if_else(is.na(GradCam), "0", paste(GradCam))) %>% 
-  mutate(Class = if_else(Class != x, "Others", Class)) %>% 
-  select(Class, GradCam) %>% 
-  table %>% 
-  rstatix::fisher_test(., detailed = FALSE) %>% 
-    mutate(Variable = x)}) %>% 
-  do.call(bind_rows, .) %>% 
-  mutate(FDR = qvalue_r(p)) %>% 
-  arrange(FDR) %>% 
-  table2png("Network/Table_Lipid_Class_Fisher.png")
-```
-![](Network/Table_Lipid_Class_Fisher.png)
-
-## Lipid, Group
-```{R}
-Group_Class_Species_tbl %>% 
-  check_levels("Group") -> Lipid_Group
-
-map(Lipid_Group, function(x){
-Feature_Cluster_list2[["Unite"]][["Cluster"]] %>% 
-  .[grepl("\\:", .)] %>% 
-  data.frame(Species = .) %>% 
-  mutate(GradCam = "1") %>% 
-  right_join(Group_Class_Species_tbl) %>% 
-  mutate(GradCam = if_else(is.na(GradCam), "0", paste(GradCam))) %>% 
-  mutate(Group = if_else(Group != x, "Others", Group)) %>% 
-  select(Group, GradCam) %>% 
-  table %>% 
-  rstatix::fisher_test() %>% 
-    mutate(Variable = x)}) %>% 
-  do.call(bind_rows, .) %>% 
-  mutate(FDR = qvalue_r(p)) %>% 
-    arrange(FDR) %>% 
-  table2png("Network/Table_Lipid_Group_Fisher.png")
-```
-![](Network/Table_Lipid_Group_Fisher.png)
 
 ## Shared in subcluster
 ```{R}
@@ -501,7 +378,6 @@ Feature_Cluster_list2 %>%
 ![](Network/Table_Number_Data.png)
 
 ## Features with the highest centrality (Top20)
-
 ```{R}
 pmap(list(Centrality_tbl_list2,
           names(Centrality_tbl_list2),
@@ -524,25 +400,6 @@ Centrality_Top10_table_list %>%
 ```
 ![](Network/Table_Centrality_Top_Unite.png)
 
-
-## Genes, cluster1
-* ITCH: a HECT-type E3 ubiquitin ligase in Tregs plays a specific role in  restraining Th2 cell responses. (J Clin Invest. 2013)
-* FAT2
-* TTC13
-* YBX2
-* PIK3R1:
-
-## Genes, cluster2
-* CASP9: a key enzyme that participates in the execution of apoptosis; Plk1 mediates
-Casp9 phosphorylation at Ser-196, which affects Casp9/3 expression and apoptosis in human airway smooth muscle (HASM) cells. The Plk1–Casp9/3 pathway is upregulated in asthmatic HASM cells. (Am J Respir Cell Mol Biol. 2022)
-* SMARCB3
-* EIF2B1
-* AATF
-* ZNF3
-
-## Genes and lipid
-* Relationships of ITCH or CASP9 to lipid has not been reported.
-
 # Pathway analysis
 ## MetaboAnalyst, unite
 ```{R}
@@ -554,34 +411,27 @@ Centrality_tbl_list2 %>%
     inner_join(Ensembl_ENTREZID_tbw %>% 
                  rename(Variable = Ensembl)) %>% 
     filter(!is.na(ENTREZID)) %>% 
-  .$ENTREZID)) -> ENTREZID_MA_list2 # ENTREZID == Symbol
-
-ENTREZID_MA_list2[["Unite"]][["Cluster"]] %>% 
-  cat(., sep = "\n")
+  .$ENTREZID)) -> ENTREZID_MA_list2
 
 Centrality_tbl_list2 %>% 
   map(~ .x %>% 
   map(~ .x %>% 
   filter(grepl("\\:", Variable)) %>% 
      filter(Centrality > 1) %>% 
-    # filter(Edge > 1) %>% 
     inner_join(Lipid_Annotation_tbw %>% 
                  rename(Variable = Name_metabolon)) %>% 
     filter(!is.na(Match)) %>% 
-  .$Match)) -> Lipid_MA_list2 # Match > Name_general >> HMDB
+  .$Match)) -> Lipid_MA_list2
 
-Lipid_MA_list2[["Unite"]][["Cluster"]] %>% 
-  as.character %>% 
-  cat(., sep = "\n")
+# Apply these vectors to MetaboAnalyst
 ```
 
 
 ```{R}
-read_csv("/Users/shibataryohei/Git/RS_mRNALipid-Asthma/ORA/MetaboAnalyst_result_pathway_GC0.8_Centrality1.csv") %>% 
+read_csv("METABOANALYSTRESULTS.csv") %>% 
   rename(Term = `...1`) %>% 
   right_join(., KEGG_Interest_tbw) %>% 
   mutate(FDR = qvalue_r(`Raw p`)) %>% 
-  # filter(FDR < 0.2) %>% 
   .[1:10, ] %>% 
   mutate(Proportion = Hits/Total * 100) %>% 
   select(Term, Proportion, `Raw p`, FDR, Impact) %>% 
@@ -598,15 +448,7 @@ read_csv("/Users/shibataryohei/Git/RS_mRNALipid-Asthma/ORA/MetaboAnalyst_result_
             color = "gray80",
             linetype = "dashed")+
   geom_point(pch = 21)+
-  # scale_color_gradientn(colours = c("navy",
-  #                                "white",
-  #                                "firebrick3"),
-  #                       space = "Lab",
-  #                       na.value = "#C6DBEF",
-  #                       # limits = c(-nes_max, nes_max),
-  #                       guide = guide_colorbar(reverse = F))+
   theme(strip.text.x = element_blank(),
-        # axis.text.y = ggtext::element_markdown(size = 15),
         strip.text.y = element_text(size = 14),
         axis.text = element_text(size = 14),
         axis.title = element_text(size = 14),
@@ -628,7 +470,7 @@ ggsave("ORA/Point_FDR_KEGG_Shared.png",
 ![](ORA/Point_FDR_KEGG_Shared.png)
 
 ```{R}
-read_csv("/Users/shibataryohei/Git/RS_mRNALipid-Asthma/ORA/MetaboAnalyst_result_pathway_GC0.8_Centrality1.csv") %>% 
+read_csv("METABOANALYSTRESULTS.csv") %>% 
   rename(Term = `...1`) %>% 
   right_join(., KEGG_Interest_tbw) %>% 
   mutate(FDR = qvalue_r(`Raw p`)) %>% 
@@ -636,7 +478,7 @@ read_csv("/Users/shibataryohei/Git/RS_mRNALipid-Asthma/ORA/MetaboAnalyst_result_
   .$Term -> Pathway_SD
 
 
-read_csv("/Users/shibataryohei/Git/RS_mRNALipid-Asthma/ORA/jointpa_matched_features.csv") %>% 
+read_csv("jointpa_matched_features.csv") %>% 
   rename(Pathway = `...1`) %>%
   rename(Variable = matched_features) %>% 
   separate_rows(Variable, sep = "; ") %>% 
@@ -663,7 +505,6 @@ Pathway_Feature_tbw %>%
 Centrality_tbl_list2 %>% 
   imap(~ .x %>% 
   imap(~ .x %>% 
-        # filter(Centrality > 0) %>% 
         filter(grepl("ENSG", Variable)) %>%
          rename(Ensembl = Variable) %>% 
         inner_join(Ensembl_Symbol_tbw) %>% 
@@ -672,8 +513,6 @@ Centrality_tbl_list2 %>%
     mutate(Type = .y)) %>%
   do.call(bind_rows, .) %>% 
   filter(Type == "Unite") %>% 
-  # filter(Symbol %in% c("ADRB1", "EDNRA", "ERBB2", "ACE")) %>% 
-  # filter(Symbol %in% c("ADRB1", "EDNRA", "ACE", "OXTR", "TRPV1", "HPN", "CXCR2"))
   select(Symbol) %>% 
   filter(!is.na(Symbol)) %>% 
   arrange(Symbol) %>% 
@@ -699,23 +538,16 @@ Centrality_tbl_list2 %>%
               col_names = FALSE)
 ```
 
-
-## Network
-![](NedRex/Unite_GC0.8_Centrality1.png)
-
-## Network
-![](NedRex/Unite_GC0.8_All.png)
-
 ## Trustworthiness score
 ```{R}
-read_csv(glue("NeDRex/Unite_GC0.8_All_Edge.csv")) %>% 
+read_csv(glue("NeDRex/All_Edge.csv")) %>% 
   select(name) %>% 
   separate(name, into = c("drugbank", "entrez"), sep = " \\(\\-\\) ") %>% 
-  inner_join(read_csv(glue("NeDRex/Unite_GC0.8_All_Node.csv")) %>% 
+  inner_join(read_csv(glue("NeDRex/All_Node.csv")) %>% 
                rename(entrez = name,
                       Symbol = displayName) %>% 
                select(entrez, Symbol)) %>% 
-  inner_join(read_csv(glue("NeDRex/Unite_GC0.8_All_Node.csv")) %>% 
+  inner_join(read_csv(glue("NeDRex/All_Node.csv")) %>% 
                rename(drugbank = name,
                       Drug = displayName) %>% 
                select(drugbank, Drug, score)
@@ -723,7 +555,6 @@ read_csv(glue("NeDRex/Unite_GC0.8_All_Edge.csv")) %>%
 
 tbw %>% 
   group_by(Drug) %>% 
- #  mutate(Symbol = as.factor(Symbol)) %>% 
   arrange(Symbol) %>% 
   summarise(Gene = str_flatten(Symbol,
                                 collapse = ", ")) -> Drug_Group_tbl
@@ -763,11 +594,10 @@ Symbol_Drug_tbw %>%
        y = "Drug name",
        size = "Number of edge")+
   theme(legend.key.size = unit(0.3, 'cm'))+
-  scale_size_continuous(range = c(1.5, 3), #change the size scale 
+  scale_size_continuous(range = c(1.5, 3), 
                         breaks = c (1, 2, 3),
                         labels = c("1", "2", "3"))+
   theme(strip.text.x = element_blank(),
-        # axis.text.y = ggtext::element_markdown(size = 15),
         strip.text.y = element_text(size = 10),
         axis.text = element_text(size = 10),
         axis.title = element_text(size = 10),
@@ -779,108 +609,3 @@ ggsave("NeDRex/Lollipop_Trust_Drug.png",
        dpi = 600, h = 1.7, w = 5.25)
 ```
 ![](NeDRex/Lollipop_Trust_Drug.png)
-
-
-
-
-## Confirmaiton
-```{R}
-mRNA_dds -> mRNA_Analysis_dds
-
-mRNA_Analysis_dds %>% 
-  .[, colnames(.) %in% study_id_Analysis] -> mRNA_Analysis_dds
-
-colData(mRNA_Analysis_dds)$asthma_epi_6yr %>% 
-  relevel(., ref = "0") -> colData(mRNA_Analysis_dds)$asthma_epi_6yr
-
-DESeqDataSet(mRNA_Analysis_dds,
-             design = ~  asthma_epi_6yr) -> mRNA_Analysis_dds #
-
-mRNA_Analysis_dds %>%
-  DESeq -> mRNA_Analysis_DESeq
-
-mRNA_Analysis_DESeq %>% 
-  results %>% 
-  as.data.frame %>% 
-  r2c("Ensembl") %>% 
-  inner_join(Ensembl_Symbol_tbw %>% 
-               filter(Symbol %in% c("ERBB2", "ADRB1")))
-```
-
-
-## Interaction of hub genes
-```{R}
-GradCam_Hot_tbl_list2 %>% 
-  .[["Unite"]] %>% 
-  .[["Cluster"]] %>% 
-  filter(grepl("ENSG00000141736|ENSG00000043591", Variable)) %>% 
-  mutate(Ensembl = if_else(grepl("ENSG00000141736", Variable),
-                        "ENSG00000141736", "ENSG00000043591")) %>% 
-  inner_join(Ensembl_Symbol_tbw) %>% 
-  select(Ensembl, Symbol, Variable) %>% 
-  arrange(Symbol) %>% 
-  table2png("NeDRex/Table_Target_Interaction.png")
-
-
-GradCam_Hot_tbl_list2 %>% 
-  .[["Unite"]] %>% 
-  .[["Cluster"]] %>% 
-  # filter(grepl("ENSG00000158301", Variable)) %>% 
-  filter(grepl("TAG44\\:0FA14\\:0", Variable)) 
-```
-![](NeDRex/Table_Target_Interaction.png)
-
-# Table 2
-
-
-```{R}
-
-pmap(list(Centrality_tbl_list2,
-          names(Centrality_tbl_list2)),
-          function(tbl_list, type){
-  tbl_list %>% 
-  imap(~ .x %>% 
-        left_join(., Ensembl_Symbol_tbw %>% 
-                    rename(Variable = Ensembl)) %>% 
-         mutate(Type = type) %>% 
-         mutate(Cluster = .y)) %>% 
-    do.call(bind_rows, .) %>% 
-  mutate(Centrality = round(Centrality, 1)) %>% 
-  select(Type, Cluster, Variable, Symbol, Centrality) %>% 
-  mutate(Symbol = if_else(is.na(Symbol), "", paste(Symbol)))}) -> Centrality_table_list
-
-Centrality_table_list[["Separate"]] %>% 
-  do.call(bind_rows, .) %>% 
-  mutate(Cluster = gsub("Cluster", "", Cluster)) %>% 
-  group_by(Variable) %>% 
-  summarise(Cluster = str_flatten(Cluster, "+")) %>% 
-  c2f -> Variable_Cluster_tbl
-
-Centrality_table_list[["Unite"]] %>% 
-  c2f %>% 
-  select(-Type, -Cluster) %>% 
-  inner_join(Variable_Cluster_tbl) %>% 
-  ungroup %>% 
-  mutate(Data = if_else(grepl("\\:", Variable), "Lipid",
-                        if_else(grepl("ENSG", Variable), "mRNA",
-                                      "Clinical factor"))) %>% 
-   mutate(Variable = if_else(Symbol == "", 
-                            Variable,
-                            Symbol)) %>% 
-  filter(Centrality > 100) %>% 
-  mutate(NeDRex = case_when(Data != "mRNA" ~ "-",
-                            Variable %in% Symbol_NeDRex ~ "Yes",
-                            (!Variable %in% Symbol_NeDRex) & Data == "mRNA" ~ "No")) %>% 
-  mutate(Pathway = if_else(Variable %in% Pathway_Feature_SD, "Yes",
-                          if_else(Data == "Clinical factor", "-", "No"))) %>% 
-  rename(Component = Variable) %>% 
-  select(Component, Data, Cluster, Centrality, Pathway, NeDRex) -> Centrality_Target_table
-
-table2png(Centrality_Target_table,
-          "GradCam/Table_Centrality_Target.png")
-  
-sjPlot::tab_df(Centrality_Target_table,
-               col.header = names(Centrality_Target_table),
-               file = "GradCam/Table_Centrality_Target.doc")
-```
-![](GradCam/Table_Centrality_Target.png)
